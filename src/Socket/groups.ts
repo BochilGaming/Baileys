@@ -131,7 +131,7 @@ export const makeGroupsSocket = (config: SocketConfig) => {
 		},
 		groupAcceptInvite: async (code: string) => {
 			const results = await groupQuery('@g.us', 'set', [{ tag: 'invite', attrs: { code } }])
-			const result = getBinaryNodeChild(result, 'group')
+			const result = getBinaryNodeChild(results, 'group')
 			return result.attrs.jid
 		},
 		groupToggleEphemeral: async(jid: string, ephemeralExpiration: number) => {
