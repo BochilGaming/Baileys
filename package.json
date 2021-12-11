@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "test": "mocha --timeout 240000 -r ts-node/register src/Tests/Tests.*.ts",
-    "prepack": "npm i -g typescript && npm i --save-dev @types/node @types/long -f && npm i && tsc",
+    "prepack": "npm i --save-dev @types/node @types/long -f && npm i && tsc",
     "lint": "eslint '*/*.ts' --quiet --fix",
     "build:all": "tsc && typedoc",
     "build:docs": "typedoc",
