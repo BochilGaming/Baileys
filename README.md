@@ -583,6 +583,11 @@ await sock.sendMessage(
     await sock.updateBlockStatus("xyz@s.whatsapp.net", "block") // Block user
     await sock.updateBlockStatus("xyz@s.whatsapp.net", "unblock") // Unblock user
     ```
+- To get a business profile, such as description, category
+    ```ts
+    const profile = await sock.getBusinessProfile("xyz@s.whatsapp.net")
+    console.log("business description: " + profile.description + ", category: " + profile.category)
+    ```
 Of course, replace ``` xyz ``` with an actual ID. 
 
 ## Groups
@@ -628,15 +633,20 @@ Of course, replace ``` xyz ``` with an actual ID.
     const code = await sock.groupInviteCode("abcd-xyz@g.us")
     console.log("group code: " + code)
     ```
+- To revoke the invite code in a group
+    ```ts
+    const code = await sock.groupRevokeInvite("abcd-xyz@g.us")
+    console.log("New group code: " + code)
+    ```
 - To query the metadata of a group
     ``` ts
     const metadata = await sock.groupMetadata("abcd-xyz@g.us") 
     console.log(metadata.id + ", title: " + metadata.subject + ", description: " + metadata.desc)
     ```
-- To join the group using the invitation code (not supported yet)
+- To join the group using the invitation code
     ``` ts
-    const response = await sock.acceptInvite("xxx")
-    console.log("joined to: " + response.gid)
+    const response = await sock.groupAcceptInvite("xxx")
+    console.log("joined to: " + response)
     ```
     Of course, replace ``` xxx ``` with invitation code.
 
