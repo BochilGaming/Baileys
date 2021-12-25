@@ -67,4 +67,13 @@ export type WABusinessProfile = {
     wid?: string
 }
 
+export type WABusinessProfileMD = { 
+    jid: string,
+    address?: string, 
+    description: string,
+    website?: string,
+    email?: string,
+    category: string
+}
+
 export type CurveKeyPair = { private: Uint8Array; public: Uint8Array }

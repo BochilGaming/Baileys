@@ -1,4 +1,4 @@
-import { SocketConfig, WAPresence, PresenceData, Chat, WAPatchCreate, WAMediaUpload, ChatMutation, WAPatchName, AppStateChunk, LTHashState, ChatModification, Contact } from "../Types";
+import { SocketConfig, WAPresence, PresenceData, Chat, WAPatchCreate, WAMediaUpload, ChatMutation, WAPatchName, AppStateChunk, LTHashState, ChatModification, Contact, WABusinessProfileMD } from "../Types";
 import { BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, jidNormalizedUser, S_WHATSAPP_NET, reduceBinaryNodeToDictionary } from "../WABinary";
 import { proto } from '../../WAProto'
 import { generateProfilePicture, toNumber, encodeSyncdPatch, decodePatches, extractSyncdPatches, chatModificationToAppPatch, decodeSyncdSnapshot, newLTHashState } from "../Utils";
@@ -157,6 +157,43 @@ export const makeChatsSocket = (config: SocketConfig) => {
                 }
             ]
         })
+    }
+    const getBusinessProfile = async (jid: string): Promise<WABusinessProfileMD | {}> => {
+        const results = await query({
+            tag: 'iq',
+            attrs: {
+                to: 's.whatsapp.net',
+                xmlns: 'w:biz',
+                type: 'get'
+            },
+            content: [{
+                tag: 'business_profile',
+                attrs: { v: '244' },
+                content: [{
+                    tag: 'profile',
+                    attrs: { jid }
+                }]
+            }]
+        })
+        const profiles = getBinaryNodeChild(getBinaryNodeChild(results, 'business_profile'), 'profile')
+        if (!profiles){
+            // if not bussines
+            if (logger.level == 'trace') logger.trace({ jid }, 'Not bussines')
+            return {}
+        } 
+        const address = getBinaryNodeChild(profiles, 'address')
+        const description = getBinaryNodeChild(profiles, 'description')
+        const website = getBinaryNodeChild(profiles, 'website')
+        const email = getBinaryNodeChild(profiles, 'email')
+        const category = getBinaryNodeChild(getBinaryNodeChild(profiles, 'categories'), 'category')
+        return {
+            jid: profiles.attrs?.jid,
+            address: address?.content.toString(),
+            description: description?.content.toString(),
+            website: website?.content.toString(),
+            email: email?.content.toString(),
+            category: category?.content.toString(),
+        }
     }
 
     const updateAccountSyncTimestamp = async(fromTimestamp: number | string) => {
@@ -621,6 +658,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
         fetchStatus,
         updateProfilePicture,
         updateBlockStatus,
+        getBusinessProfile,
         resyncAppState,
         chatModify,
         resyncMainAppState,
