@@ -73,7 +73,11 @@ export type WABusinessProfileMD = {
     description: string,
     website?: string,
     email?: string,
-    category: string
+    category: string,
+    business_hours: {
+        timezone: string,
+        business_config: WABusinessHoursConfig[]
+    }
 }
 
 export type CurveKeyPair = { private: Uint8Array; public: Uint8Array }

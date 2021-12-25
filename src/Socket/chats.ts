@@ -186,6 +186,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
         const website = getBinaryNodeChild(profiles, 'website')
         const email = getBinaryNodeChild(profiles, 'email')
         const category = getBinaryNodeChild(getBinaryNodeChild(profiles, 'categories'), 'category')
+        const business_hours = getBinaryNodeChild(profiles, 'business_hours')
+        const business_hours_config = business_hours && getBinaryNodeChildren(business_hours, 'business_hours_config')
         return {
             jid: profiles.attrs?.jid,
             address: address?.content.toString(),
@@ -193,6 +195,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
             website: website?.content.toString(),
             email: email?.content.toString(),
             category: category?.content.toString(),
+            business_hours: {
+                timezone: business_hours?.attrs?.timezone,
+                business_config: business_hours_config?.map(({ attrs }) => attrs)
+            }
         }
     }
 
