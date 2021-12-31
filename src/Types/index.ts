@@ -45,7 +45,7 @@ export type WAInitResponse = {
     status: 200
 }
 
-type WABusinessHoursConfig = {
+export type WABusinessHoursConfig = {
     day_of_week: string
     mode: string
     open_time?: number
@@ -55,7 +55,7 @@ export type WABusinessProfile = {
     description: string
     email: string
     business_hours:  {
-        timezone: string
+        timezone?: string
         config?:  WABusinessHoursConfig[]
         business_config?: WABusinessHoursConfig[]
     }
@@ -67,17 +67,5 @@ export type WABusinessProfile = {
     wid?: string
 }
 
-export type WABusinessProfileMD = { 
-    jid: string,
-    address?: string, 
-    description: string,
-    website?: string,
-    email?: string,
-    category: string,
-    business_hours: {
-        timezone: string,
-        business_config: WABusinessHoursConfig[]
-    }
-}
 
 export type CurveKeyPair = { private: Uint8Array; public: Uint8Array }
