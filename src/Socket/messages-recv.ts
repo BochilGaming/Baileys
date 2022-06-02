@@ -2,7 +2,7 @@
 import { proto } from '../../WAProto'
 import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
 import { BaileysEventMap, MessageReceiptType, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageStubType } from '../Types'
-import { debouncedTimeout, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, normalizeMessageContent, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { debouncedTimeout, decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, normalizeMessageContent, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeKeyedMutex, makeMutex } from '../Utils/make-mutex'
 import processMessage, { cleanMessage } from '../Utils/process-message'
 import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
@@ -46,6 +46,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const callOfferData: { [id: string]: WACallEvent } = { }
 
 	const historyCache = new Set<string>()
+
+	let sendActiveReceipts = false
 
 	const sendMessageAck = async({ tag, attrs }: BinaryNode, extraAttrs: BinaryNodeAttributes = { }) => {
 		const stanza: BinaryNode = {
@@ -171,12 +173,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const normalizedContent = !!msg.message ? normalizeMessageContent(msg.message) : undefined
 		const isAnyHistoryMsg = !!normalizedContent?.protocolMessage?.historySyncNotification
 		if(isAnyHistoryMsg) {
-			const jid = jidEncode(jidDecode(msg.key.remoteJid!).user, 'c.us')
-			await sendReceipt(jid, undefined, [msg.key.id], 'hist_sync')
 			// we only want to sync app state once we've all the history
 			// restart the app state sync timeout
 			logger.debug('restarting app sync timeout')
 			appStateSyncTimeout.start()
+
+			const jid = jidEncode(jidDecode(msg.key.remoteJid!).user, 'c.us')
+			await sendReceipt(jid, undefined, [msg.key.id], 'hist_sync')
 		}
 
 		return newEvents
@@ -208,8 +211,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	const processNotification = async(node: BinaryNode): Promise<Partial<proto.IWebMessageInfo>> => {
 		const result: Partial<proto.IWebMessageInfo> = { }
 		const [child] = getAllBinaryNodeChildren(node)
+		const nodeType = node.attrs.type
 
-		if(node.attrs.type === 'w:gp2') {
+		if(nodeType === 'w:gp2') {
 			switch (child?.tag) {
 			case 'create':
 				const metadata = extractGroupMetadata(child)
@@ -271,6 +275,9 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 
 			}
+		} else if(nodeType === 'mediaretry') {
+			const event = decodeMediaRetryNode(node)
+			ev.emit('messages.media-update', [event])
 		} else {
 			switch (child.tag) {
 			case 'devices':
@@ -506,6 +513,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						if(isJidUser(msg.key.remoteJid)) {
 							participant = author
 						}
+					} else if(!sendActiveReceipts) {
+						type = 'inactive'
 					}
 
 					await sendReceipt(msg.key.remoteJid!, participant, [msg.key.id!], type)
@@ -609,6 +618,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				'messages.upsert',
 				{ messages: [protoMsg], type: call.offline ? 'append' : 'notify' }
 			)
+		}
+	})
+
+	ev.on('connection.update', ({ isOnline }) => {
+		if(typeof isOnline !== 'undefined') {
+			sendActiveReceipts = isOnline
+			logger.trace(`sendActiveReceipts set to "${sendActiveReceipts}"`)
 		}
 	})
 

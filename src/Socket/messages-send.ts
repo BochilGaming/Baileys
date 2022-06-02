@@ -1,9 +1,10 @@
 
+import { Boom } from '@hapi/boom'
 import NodeCache from 'node-cache'
 import { proto } from '../../WAProto'
 import { WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelayOptions, MiscMessageGenerationOptions, SocketConfig, WAMessageKey } from '../Types'
-import { aggregateMessageKeysNotFromMe, encodeWAMessage, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, unixTimestampSeconds } from '../Utils'
+import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, unixTimestampSeconds } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import { BinaryNode, BinaryNodeAttributes, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, JidWithDevice, reduceBinaryNodeToDictionary, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
@@ -454,6 +455,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const waUploadToServer = getWAUploadToServer(config, refreshMediaConn)
 
+	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
+
 	return {
 		...sock,
 		assertSessions,
@@ -464,6 +467,53 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		refreshMediaConn,
 	    waUploadToServer,
 		fetchPrivacySettings,
+		updateMediaMessage: async(message: proto.IWebMessageInfo) => {
+			const content = assertMediaContent(message.message)
+			const mediaKey = content.mediaKey!
+			const meId = authState.creds.me!.id
+			const node = encryptMediaRetryRequest(message.key, mediaKey, meId)
+
+			let error: Error | undefined = undefined
+			await Promise.all(
+				[
+					sendNode(node),
+					waitForMsgMediaUpdate(update => {
+						const result = update.find(c => c.key.id === message.key.id)
+						if(result) {
+							if(result.error) {
+								error = result.error
+							} else {
+								try {
+									const media = decryptMediaRetryData(result.media!, mediaKey, result.key.id)
+									if(media.result !== proto.MediaRetryNotification.MediaRetryNotificationResultType.SUCCESS) {
+										throw new Boom(`Media re-upload failed by device (${media.result})`, { data: media })
+									}
+
+									content.directPath = media.directPath
+									content.url = getUrlFromDirectPath(content.directPath!)
+
+									logger.debug({ directPath: media.directPath, key: result.key }, 'media update successful')
+								} catch(err) {
+									error = err
+								}
+							}
+
+							return true
+						}
+					})
+				]
+			)
+
+			if(error) {
+				throw error
+			}
+
+			ev.emit('messages.update', [
+				{ key: message.key, update: { message: message.message } }
+			])
+
+			return message
+		},
 		sendMessage: async(
 			jid: string,
 			content: AnyMessageContent,
