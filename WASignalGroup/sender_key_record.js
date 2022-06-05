@@ -22,7 +22,7 @@ class SenderKeyRecord {
     }
   
     getSenderKeyState(keyId) {
-      if (!keyId && this.senderKeyStates.length) return this.senderKeyStates[0];
+      if (!keyId && this.senderKeyStates.length) return this.senderKeyStates[this.senderKeyStates.length - 1];
       for (let i = 0; i < this.senderKeyStates.length; i++) {
         const state = this.senderKeyStates[i];
         if (state.getKeyId() === keyId) {
@@ -34,6 +34,9 @@ class SenderKeyRecord {
   
     addSenderKeyState(id, iteration, chainKey, signatureKey) {
       this.senderKeyStates.push(new SenderKeyState(id, iteration, chainKey, null, signatureKey));
+      if (this.senderKeyStates.length > this.MAX_STATES) {
+        this.senderKeyStates.shift();
+      }
     }
   
     setSenderKeyState(id, iteration, chainKey, keyPair) {

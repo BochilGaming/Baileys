@@ -1,5 +1,6 @@
 const SenderKeyMessage = require('./sender_key_message');
 const crypto = require('libsignal/src/crypto');
+const quequeJob = require('./queque_job');
 
 class GroupCipher {
   constructor(senderKeyStore, senderKeyName) {
@@ -9,25 +10,27 @@ class GroupCipher {
 
   async encrypt(paddedPlaintext) {
     try {
-      const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
-      const senderKeyState = record.getSenderKeyState();
-      const senderKey = senderKeyState.getSenderChainKey().getSenderMessageKey();
-
-      const ciphertext = await this.getCipherText(
-        senderKey.getIv(),
-        senderKey.getCipherKey(),
-        paddedPlaintext
-      );
-
-      const senderKeyMessage = new SenderKeyMessage(
-        senderKeyState.getKeyId(),
-        senderKey.getIteration(),
-        ciphertext,
-        senderKeyState.getSigningKeyPrivate()
-      );
-      senderKeyState.setSenderChainKey(senderKeyState.getSenderChainKey().getNext());
-      await this.senderKeyStore.storeSenderKey(this.senderKeyName, record);
-      return senderKeyMessage.serialize();
+      return await this.quequeJob(function () {
+        const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
+        const senderKeyState = record.getSenderKeyState();
+        const senderKey = senderKeyState.getSenderChainKey().getSenderMessageKey();
+  
+        const ciphertext = await this.getCipherText(
+          senderKey.getIv(),
+          senderKey.getCipherKey(),
+          paddedPlaintext
+        );
+  
+        const senderKeyMessage = new SenderKeyMessage(
+          senderKeyState.getKeyId(),
+          senderKey.getIteration(),
+          ciphertext,
+          senderKeyState.getSigningKeyPrivate()
+        );
+        senderKeyState.setSenderChainKey(senderKeyState.getSenderChainKey().getNext());
+        await this.senderKeyStore.storeSenderKey(this.senderKeyName, record);
+        return senderKeyMessage.serialize();
+      })
     } catch (e) {
       //console.log(e.stack);
       throw new Error('NoSessionException');
@@ -35,25 +38,27 @@ class GroupCipher {
   }
 
   async decrypt(senderKeyMessageBytes) {
-    const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
-    if (!record) throw new Error(`No sender key for: ${this.senderKeyName}`);
-
-    const senderKeyMessage = new SenderKeyMessage(null, null, null, null, senderKeyMessageBytes);
-
-    const senderKeyState = record.getSenderKeyState(senderKeyMessage.getKeyId());
-    //senderKeyMessage.verifySignature(senderKeyState.getSigningKeyPublic());
-    const senderKey = this.getSenderKey(senderKeyState, senderKeyMessage.getIteration());
-    // senderKeyState.senderKeyStateStructure.senderSigningKey.private =
-
-    const plaintext = await this.getPlainText(
-      senderKey.getIv(),
-      senderKey.getCipherKey(),
-      senderKeyMessage.getCipherText()
-    );
-
-    await this.senderKeyStore.storeSenderKey(this.senderKeyName, record);
-
-    return plaintext;
+    return this.quequeJob(function() {
+      const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
+      if (!record) throw new Error(`No sender key for: ${this.senderKeyName}`);
+  
+      const senderKeyMessage = new SenderKeyMessage(null, null, null, null, senderKeyMessageBytes);
+  
+      const senderKeyState = record.getSenderKeyState(senderKeyMessage.getKeyId());
+      //senderKeyMessage.verifySignature(senderKeyState.getSigningKeyPublic());
+      const senderKey = this.getSenderKey(senderKeyState, senderKeyMessage.getIteration());
+      // senderKeyState.senderKeyStateStructure.senderSigningKey.private =
+  
+      const plaintext = await this.getPlainText(
+        senderKey.getIv(),
+        senderKey.getCipherKey(),
+        senderKeyMessage.getCipherText()
+      );
+  
+      await this.senderKeyStore.storeSenderKey(this.senderKeyName, record);
+  
+      return plaintext;
+    })
   }
 
   getSenderKey(senderKeyState, iteration) {
@@ -100,6 +105,10 @@ class GroupCipher {
       //console.log(e.stack);
       throw new Error('InvalidMessageException');
     }
+  }
+
+  async quequeJob(job) {
+    return await quequeJob(this.senderKeyName, job);
   }
 }
 
