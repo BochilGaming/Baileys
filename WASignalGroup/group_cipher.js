@@ -10,7 +10,7 @@ class GroupCipher {
 
   async encrypt(paddedPlaintext) {
     try {
-      return await this.quequeJob(function () {
+      return await this.quequeJob(async function () {
         const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
         const senderKeyState = record.getSenderKeyState();
         const senderKey = senderKeyState.getSenderChainKey().getSenderMessageKey();
@@ -38,7 +38,7 @@ class GroupCipher {
   }
 
   async decrypt(senderKeyMessageBytes) {
-    return this.quequeJob(function() {
+    return this.quequeJob(async function() {
       const record = await this.senderKeyStore.loadSenderKey(this.senderKeyName);
       if (!record) throw new Error(`No sender key for: ${this.senderKeyName}`);
   

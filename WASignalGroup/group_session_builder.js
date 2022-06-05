@@ -30,17 +30,18 @@ class GroupSessionBuilder {
       const signingKey = keyhelper.generateSenderSigningKey();
 
       senderKeyRecord.setSenderKeyState(keyId, 0, senderKey, signingKey);
-      await this.senderKeyStore.storeSenderKey(senderKeyName, senderKeyRecord);
     }
-
+    
     const state = senderKeyRecord.getSenderKeyState();
-
+    
+    await this.senderKeyStore.storeSenderKey(senderKeyName, senderKeyRecord);
+    
     return new SenderKeyDistributionMessage(
       state.getKeyId(),
       state.getSenderChainKey().getIteration(),
       state.getSenderChainKey().getSeed(),
       state.getSigningKeyPublic()
-    );
+      );
   }
 }
 module.exports = GroupSessionBuilder;
