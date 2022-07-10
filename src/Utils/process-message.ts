@@ -1,6 +1,6 @@
 import type { Logger } from 'pino'
 import { proto } from '../../WAProto'
-import { AuthenticationCreds, BaileysEventMap, Chat, GroupMetadata, InitialReceivedChatsState, ParticipantAction, SignalKeyStoreWithTransaction, WAMessageStubType } from '../Types'
+import { AuthenticationCreds, BaileysEventEmitter, Chat, GroupMetadata, InitialReceivedChatsState, ParticipantAction, SignalKeyStoreWithTransaction, WAMessageStubType } from '../Types'
 import { downloadAndProcessHistorySyncNotification, normalizeMessageContent, toNumber } from '../Utils'
 import { areJidsSameUser, jidNormalizedUser } from '../WABinary'
 
@@ -10,8 +10,8 @@ type ProcessMessageContext = {
 	downloadHistory: boolean
 	creds: AuthenticationCreds
 	keyStore: SignalKeyStoreWithTransaction
+	ev: BaileysEventEmitter
 	logger?: Logger
-	treatCiphertextMessagesAsReal?: boolean
 }
 
 const MSG_MISSED_CALL_TYPES = new Set([
@@ -31,36 +31,40 @@ export const cleanMessage = (message: proto.IWebMessageInfo, meId: string) => {
 	if(content?.reactionMessage) {
 		const msgKey = content.reactionMessage.key!
 		if(!message.key.fromMe) {
-			msgKey.fromMe = areJidsSameUser(msgKey.participant || msgKey.remoteJid, meId)
 			msgKey.remoteJid = message.key.remoteJid
+			msgKey.fromMe = areJidsSameUser(msgKey.participant || msgKey.remoteJid, meId)
 			msgKey.participant = msgKey.participant || message.key.participant
 		}
 	}
 }
 
+export const isRealMessage = (message: proto.IWebMessageInfo) => {
+	const normalizedContent = normalizeMessageContent(message.message)
+	return (
+		!!normalizedContent
+		|| MSG_MISSED_CALL_TYPES.has(message.messageStubType!)
+	)
+	&& !normalizedContent?.protocolMessage
+	&& !normalizedContent?.reactionMessage
+}
+
+export const shouldIncrementChatUnread = (message: proto.IWebMessageInfo) => (
+	!message.key.fromMe && !message.messageStubType
+)
+
 const processMessage = async(
 	message: proto.IWebMessageInfo,
-	{ downloadHistory, historyCache, recvChats, creds, keyStore, logger, treatCiphertextMessagesAsReal }: ProcessMessageContext
+	{ downloadHistory, ev, historyCache, recvChats, creds, keyStore, logger }: ProcessMessageContext
 ) => {
 	const meId = creds.me!.id
 	const { accountSettings } = creds
-	const map: Partial<BaileysEventMap<any>> = { }
 
-	const chat: Partial<Chat> = { id: jidNormalizedUser(message.key.remoteJid) }
+	const chat: Partial<Chat> = { id: jidNormalizedUser(message.key.remoteJid!) }
 
-	const normalizedContent = !!message.message && normalizeMessageContent(message.message)
-	if(
-		(
-			!!normalizedContent
-			|| MSG_MISSED_CALL_TYPES.has(message.messageStubType)
-			|| (message.messageStubType === WAMessageStubType.CIPHERTEXT && treatCiphertextMessagesAsReal)
-		)
-		&& !normalizedContent?.protocolMessage
-		&& !normalizedContent?.reactionMessage
-	) {
+	if(isRealMessage(message)) {
 		chat.conversationTimestamp = toNumber(message.messageTimestamp)
 		// only increment unread count if not CIPHERTEXT and from another person
-		if(!message.key.fromMe && !message.messageStubType) {
+		if(shouldIncrementChatUnread(message)) {
 			chat.unreadCount = (chat.unreadCount || 0) + 1
 		}
 
@@ -75,7 +79,7 @@ const processMessage = async(
 	if(protocolMsg) {
 		switch (protocolMsg.type) {
 		case proto.ProtocolMessage.ProtocolMessageType.HISTORY_SYNC_NOTIFICATION:
-			const histNotification = protocolMsg!.historySyncNotification
+			const histNotification = protocolMsg!.historySyncNotification!
 
 			logger?.info({ histNotification, id: message.key.id }, 'got history notification')
 
@@ -84,25 +88,24 @@ const processMessage = async(
 				const isLatest = historyCache.size === 0 && !creds.processedHistoryMessages?.length
 
 				if(chats.length) {
-					map['chats.set'] = { chats, isLatest }
+					ev.emit('chats.set', { chats, isLatest })
 				}
 
 				if(messages.length) {
-					map['messages.set'] = { messages, isLatest }
+					ev.emit('messages.set', { messages, isLatest })
 				}
 
 				if(contacts.length) {
-					map['contacts.set'] = { contacts, isLatest }
+					ev.emit('contacts.set', { contacts, isLatest })
 				}
 
 				if(didProcess) {
-					map['creds.update'] = {
-						...(map['creds.update'] || {}),
+					ev.emit('creds.update', {
 						processedHistoryMessages: [
 							...(creds.processedHistoryMessages || []),
-							{ key: message.key, timestamp: message.messageTimestamp }
+							{ key: message.key, messageTimestamp: message.messageTimestamp }
 						]
-					}
+					})
 				}
 			}
 
@@ -114,24 +117,24 @@ const processMessage = async(
 				await keyStore.transaction(
 					async() => {
 						for(const { keyData, keyId } of keys) {
-							const strKeyId = Buffer.from(keyId.keyId!).toString('base64')
+							const strKeyId = Buffer.from(keyId!.keyId!).toString('base64')
 
 							logger?.info({ strKeyId }, 'injecting new app state sync key')
-							await keyStore.set({ 'app-state-sync-key': { [strKeyId]: keyData } })
+							await keyStore.set({ 'app-state-sync-key': { [strKeyId]: keyData! } })
 
 							newAppStateSyncKeyId = strKeyId
 						}
 					}
 				)
 
-				map['creds.update'] = { myAppStateKeyId: newAppStateSyncKeyId }
+				ev.emit('creds.update', { myAppStateKeyId: newAppStateSyncKeyId })
 			} else {
 				logger?.info({ protocolMsg }, 'recv app state sync with 0 keys')
 			}
 
 			break
 		case proto.ProtocolMessage.ProtocolMessageType.REVOKE:
-			map['messages.update'] = [
+			ev.emit('messages.update', [
 				{
 					key: {
 						...message.key,
@@ -139,7 +142,7 @@ const processMessage = async(
 					},
 					update: { message: null, messageStubType: WAMessageStubType.REVOKE, key: message.key }
 				}
-			]
+			])
 			break
 		case proto.ProtocolMessage.ProtocolMessageType.EPHEMERAL_SETTING:
 			Object.assign(chat, {
@@ -153,21 +156,19 @@ const processMessage = async(
 			...content.reactionMessage,
 			key: message.key,
 		}
-		const operation = content.reactionMessage?.text ? 'add' : 'remove'
-		map['messages.reaction'] = {
+		ev.emit('messages.reaction', [{
 			reaction,
 			key: content.reactionMessage!.key!,
-			operation
-		}
+		}])
 	} else if(message.messageStubType) {
 		const jid = message.key!.remoteJid!
 		//let actor = whatsappID (message.participant)
 		let participants: string[]
 		const emitParticipantsUpdate = (action: ParticipantAction) => (
-			map['group-participants.update'] = { id: jid, participants, action }
+			ev.emit('group-participants.update', { id: jid, participants, action })
 		)
 		const emitGroupUpdate = (update: Partial<GroupMetadata>) => {
-			map['groups.update'] = [ { id: jid, ...update } ]
+			ev.emit('groups.update', [{ id: jid, ...update }])
 		}
 
 		const participantsIncludesMe = () => participants.find(jid => areJidsSameUser(meId, jid))
@@ -175,7 +176,7 @@ const processMessage = async(
 		switch (message.messageStubType) {
 		case WAMessageStubType.GROUP_PARTICIPANT_LEAVE:
 		case WAMessageStubType.GROUP_PARTICIPANT_REMOVE:
-			participants = message.messageStubParameters
+			participants = message.messageStubParameters || []
 			emitParticipantsUpdate('remove')
 			// mark the chat read only if you left the group
 			if(participantsIncludesMe()) {
@@ -186,7 +187,7 @@ const processMessage = async(
 		case WAMessageStubType.GROUP_PARTICIPANT_ADD:
 		case WAMessageStubType.GROUP_PARTICIPANT_INVITE:
 		case WAMessageStubType.GROUP_PARTICIPANT_ADD_REQUEST_JOIN:
-			participants = message.messageStubParameters
+			participants = message.messageStubParameters || []
 			if(participantsIncludesMe()) {
 				chat.readOnly = false
 			}
@@ -194,23 +195,23 @@ const processMessage = async(
 			emitParticipantsUpdate('add')
 			break
 		case WAMessageStubType.GROUP_PARTICIPANT_DEMOTE:
-			participants = message.messageStubParameters
+			participants = message.messageStubParameters || []
 			emitParticipantsUpdate('demote')
 			break
 		case WAMessageStubType.GROUP_PARTICIPANT_PROMOTE:
-			participants = message.messageStubParameters
+			participants = message.messageStubParameters || []
 			emitParticipantsUpdate('promote')
 			break
 		case WAMessageStubType.GROUP_CHANGE_ANNOUNCE:
-			const announceValue = message.messageStubParameters[0]
+			const announceValue = message.messageStubParameters?.[0]
 			emitGroupUpdate({ announce: announceValue === 'true' || announceValue === 'on' })
 			break
 		case WAMessageStubType.GROUP_CHANGE_RESTRICT:
-			const restrictValue = message.messageStubParameters[0]
+			const restrictValue = message.messageStubParameters?.[0]
 			emitGroupUpdate({ restrict: restrictValue === 'true' || restrictValue === 'on' })
 			break
 		case WAMessageStubType.GROUP_CHANGE_SUBJECT:
-			const name = message.messageStubParameters[0]
+			const name = message.messageStubParameters?.[0]
 			chat.name = name
 			emitGroupUpdate({ subject: name })
 			break
@@ -218,10 +219,8 @@ const processMessage = async(
 	}
 
 	if(Object.keys(chat).length > 1) {
-		map['chats.update'] = [chat]
+		ev.emit('chats.update', [chat])
 	}
-
-	return map
 }
 
 export default processMessage

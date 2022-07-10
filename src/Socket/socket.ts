@@ -1,11 +1,11 @@
 import { Boom } from '@hapi/boom'
-import EventEmitter from 'events'
 import { promisify } from 'util'
 import WebSocket from 'ws'
 import { proto } from '../../WAProto'
 import { DEF_CALLBACK_PREFIX, DEF_TAG_PREFIX, DEFAULT_ORIGIN, INITIAL_PREKEY_COUNT, MIN_PREKEY_COUNT } from '../Defaults'
-import { AuthenticationCreds, BaileysEventEmitter, BaileysEventMap, DisconnectReason, SocketConfig } from '../Types'
+import { DisconnectReason, SocketConfig } from '../Types'
 import { addTransactionCapability, bindWaitForConnectionUpdate, configureSuccessfulPairing, Curve, generateLoginNode, generateMdTagPrefix, generateRegistrationNode, getCodeFromWSError, getErrorCodeFromStreamError, getNextPreKeysNode, makeNoiseHandler, printQRIfNecessaryListener, promiseTimeout } from '../Utils'
+import { makeEventBuffer } from '../Utils/event-buffer'
 import { assertNodeErrorFree, BinaryNode, encodeBinaryNode, getBinaryNodeChild, getBinaryNodeChildren, S_WHATSAPP_NET } from '../WABinary'
 
 /**
@@ -34,7 +34,7 @@ export const makeSocket = ({
 		agent
 	})
 	ws.setMaxListeners(0)
-	const ev = new EventEmitter() as BaileysEventEmitter
+	const ev = makeEventBuffer(logger)
 	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
 	const ephemeralKeyPair = Curve.generateKeyPair()
 	/** WA noise protocol wrapper */
@@ -90,7 +90,7 @@ export const makeSocket = ({
 		let onOpen: (data: any) => void
 		let onClose: (err: Error) => void
 
-		const result = new Promise<any>((resolve, reject) => {
+		const result = promiseTimeout<any>(connectTimeoutMs, (resolve, reject) => {
 			onOpen = (data: any) => resolve(data)
 			onClose = reject
 			ws.on('frame', onOpen)
@@ -104,7 +104,7 @@ export const makeSocket = ({
 			})
 
 		if(sendMsg) {
-			sendRawMessage(sendMsg).catch(onClose)
+			sendRawMessage(sendMsg).catch(onClose!)
 		}
 
 		return result
@@ -134,9 +134,9 @@ export const makeSocket = ({
 			)
 			return result as any
 		} finally {
-			ws.off(`TAG:${msgId}`, onRecv)
-			ws.off('close', onErr) // if the socket closes, you'll never receive the message
-			ws.off('error', onErr)
+			ws.off(`TAG:${msgId}`, onRecv!)
+			ws.off('close', onErr!) // if the socket closes, you'll never receive the message
+			ws.off('error', onErr!)
 		}
 	}
 
@@ -215,7 +215,7 @@ export const makeSocket = ({
 			]
 		})
 		const countChild = getBinaryNodeChild(result, 'count')
-		return +countChild.attrs.value
+		return +countChild!.attrs.value
 	}
 
 	/** generates and uploads a set of pre-keys to the server */
@@ -384,12 +384,6 @@ export const makeSocket = ({
 		})
 	)
 
-	const emitEventsFromMap = (map: Partial<BaileysEventMap<AuthenticationCreds>>) => {
-		for(const key in map) {
-			ev.emit(key as any, map[key])
-		}
-	}
-
 	/** logout & invalidate connection */
 	const logout = async() => {
 		const jid = authState.creds.me?.id
@@ -501,15 +495,6 @@ export const makeSocket = ({
 		ev.emit('connection.update', { connection: 'open' })
 	})
 
-	ws.on('CB:ib,,offline', (node: BinaryNode) => {
-		const child = getBinaryNodeChild(node, 'offline')
-		const offlineCount = +child.attrs.count
-
-		logger.info(`got ${offlineCount} offline messages/notifications`)
-
-		ev.emit('connection.update', { receivedPendingNotifications: true })
-	})
-
 	ws.on('CB:stream:error', (node: BinaryNode) => {
 		logger.error({ node }, 'stream errored out')
 
@@ -528,17 +513,19 @@ export const makeSocket = ({
 	})
 
 	process.nextTick(() => {
+		// start buffering important events
+		ev.buffer()
 		ev.emit('connection.update', { connection: 'connecting', receivedPendingNotifications: false, qr: undefined })
 	})
 	// update credentials when required
 	ev.on('creds.update', update => {
 		const name = update.me?.name
 		// if name has just been received
-		if(!creds.me?.name && name) {
+		if(creds.me?.name !== name) {
 			logger.info({ name }, 'updated pushName')
 			sendNode({
 				tag: 'presence',
-				attrs: { name }
+				attrs: { name: name! }
 			})
 				.catch(err => {
 					logger.warn({ trace: err.stack }, 'error in sending presence update on name change')
@@ -560,7 +547,6 @@ export const makeSocket = ({
 		get user() {
 			return authState.creds.me
 		},
-		emitEventsFromMap,
 		generateMessageTag,
 		query,
 		waitForMessage,
@@ -572,7 +558,7 @@ export const makeSocket = ({
 		onUnexpectedError,
 		uploadPreKeys,
 		/** Waits for the connection to WA to reach a state */
-		waitForConnectionUpdate: bindWaitForConnectionUpdate(ev)
+		waitForConnectionUpdate: bindWaitForConnectionUpdate(ev),
 	}
 }
 

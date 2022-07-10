@@ -1,7 +1,6 @@
 import type { proto } from '../../WAProto'
-import type { AccountSettings, AuthenticationCreds } from './Auth'
-import { Contact } from './Contact'
-import type { MinimalMessage, WAMessageUpdate } from './Message'
+import type { AccountSettings } from './Auth'
+import type { MinimalMessage } from './Message'
 
 /** set of statuses visible to other people; see updatePresence() in WhatsAppWeb.Send */
 export type WAPresence = 'unavailable' | 'available' | 'composing' | 'recording' | 'paused'
@@ -26,20 +25,6 @@ export type ChatMutation = {
     index: string[]
 }
 
-export type SyncActionUpdates = {
-    credsUpdates: Partial<AuthenticationCreds>
-    chatUpdates: { [jid: string]: Partial<Chat> }
-    chatDeletes: string[]
-    contactUpserts: { [jid: string]: Contact }
-    msgUpdates: { [jid: string]: WAMessageUpdate }
-    msgDeletes: proto.IMessageKey[]
-}
-
-export type AppStateChunk = {
-    updates: SyncActionUpdates
-    collectionsToHandle: WAPatchName[]
-}
-
 export type WAPatchCreate = {
     syncAction: proto.ISyncActionValue
     index: string[]
@@ -48,7 +33,7 @@ export type WAPatchCreate = {
     operation: proto.SyncdMutation.SyncdMutationSyncdOperation
 }
 
-export type Chat = Omit<proto.IConversation, 'messages'> & {
+export type Chat = proto.IConversation & {
     /** unix timestamp of date when mute ends, if applicable */
     mute?: number | null
     /** timestamp of when pinned */

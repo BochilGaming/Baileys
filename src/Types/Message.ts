@@ -22,7 +22,7 @@ export type WAMediaUpload = Buffer | { url: URL | string } | { stream: Readable 
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
 
-export type DownloadableMessage = { mediaKey?: Uint8Array, directPath?: string, url?: string }
+export type DownloadableMessage = { mediaKey?: Uint8Array | null, directPath?: string | null, url?: string | null }
 
 export type MessageReceiptType = 'read' | 'read-self' | 'hist_sync' | 'peer_msg' | 'sender' | 'inactive' | undefined
 
@@ -37,7 +37,7 @@ export interface WAUrlInfo {
     'canonical-url': string
     'matched-text': string
     title: string
-    description: string
+    description?: string
     jpegThumbnail?: Buffer
 }
 
@@ -182,11 +182,16 @@ export type MediaGenerationOptions = {
     mediaUploadTimeoutMs?: number
 }
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
-	getUrlInfo?: (text: string) => Promise<WAUrlInfo>
+	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
 }
 export type MessageGenerationOptions = MessageContentGenerationOptions & MessageGenerationOptionsFromContent
 
-export type MessageUpdateType = 'append' | 'notify' | 'replace'
+/**
+ * Type of message upsert
+ * 1. notify => notify the user, this message was just received
+ * 2. append => append the message to the chat history, no notification required
+ */
+export type MessageUpsertType = 'append' | 'notify'
 
 export type MessageUserReceipt = proto.IUserReceipt
 
