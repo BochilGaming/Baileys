@@ -30,9 +30,19 @@ export const cleanMessage = (message: proto.IWebMessageInfo, meId: string) => {
 	// if the message has a reaction, ensure fromMe & remoteJid are from our perspective
 	if(content?.reactionMessage) {
 		const msgKey = content.reactionMessage.key!
+		// if the reaction is from another user
+		// we've to correctly map the key to this user's perspective
 		if(!message.key.fromMe) {
+			// if the sender believed the message being reacted to is not from them
+			// we've to correct the key to be from them, or some other participant
+			msgKey.fromMe = !msgKey.fromMe
+				? areJidsSameUser(msgKey.participant || msgKey.remoteJid!, meId)
+				// if the message being reacted to, was from them
+				// fromMe automatically becomes false
+				: false
+			// set the remoteJid to being the same as the chat the message came from
 			msgKey.remoteJid = message.key.remoteJid
-			msgKey.fromMe = areJidsSameUser(msgKey.participant || msgKey.remoteJid, meId)
+			// set participant of the message
 			msgKey.participant = msgKey.participant || message.key.participant
 		}
 	}
@@ -84,8 +94,8 @@ const processMessage = async(
 			logger?.info({ histNotification, id: message.key.id }, 'got history notification')
 
 			if(downloadHistory) {
-				const { chats, contacts, messages, didProcess } = await downloadAndProcessHistorySyncNotification(histNotification, historyCache, recvChats)
 				const isLatest = historyCache.size === 0 && !creds.processedHistoryMessages?.length
+				const { chats, contacts, messages, didProcess } = await downloadAndProcessHistorySyncNotification(histNotification, historyCache, recvChats)
 
 				if(chats.length) {
 					ev.emit('chats.set', { chats, isLatest })

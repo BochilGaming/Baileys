@@ -2,10 +2,10 @@
 import { proto } from '../../WAProto'
 import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
 import { MessageReceiptType, MessageRelayOptions, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageKey, WAMessageStubType, WAPatchName } from '../Types'
-import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, generateSignalPubKey, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import { cleanMessage } from '../Utils/process-message'
-import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
+import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
@@ -62,35 +62,33 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		await sendNode(stanza)
 	}
 
-	const sendRetryRequest = async(node: BinaryNode) => {
+	const sendRetryRequest = async(node: BinaryNode, forceIncludeKeys = false) => {
 		const msgId = node.attrs.id
-		const retryCount = msgRetryMap[msgId] || 1
+
+		let retryCount = msgRetryMap[msgId] || 0
 		if(retryCount >= 5) {
 			logger.debug({ retryCount, msgId }, 'reached retry limit, clearing')
 			delete msgRetryMap[msgId]
 			return
 		}
 
-		msgRetryMap[msgId] = retryCount + 1
+		retryCount += 1
+		msgRetryMap[msgId] = retryCount
 
-		const isGroup = !!node.attrs.participant
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
-		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode(account!).finish()
+		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode({
+			...account,
+			accountSignatureKey: undefined
+		}).finish()
 		await authState.keys.transaction(
 			async() => {
-				const { update, preKeys } = await getNextPreKeys(authState, 1)
-
-				const [keyId] = Object.keys(preKeys)
-				const key = preKeys[+keyId]
-
-				const decFrom = node.attrs.from ? jidDecode(node.attrs.from) : undefined
 				const receipt: BinaryNode = {
 					tag: 'receipt',
 					attrs: {
 						id: msgId,
 						type: 'retry',
-						to: isGroup ? node.attrs.from : jidEncode(decFrom!.user, 's.whatsapp.net', decFrom!.device, 0)
+						to: node.attrs.from
 					},
 					content: [
 						{
@@ -118,27 +116,31 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					receipt.attrs.participant = node.attrs.participant
 				}
 
-				if(retryCount > 1) {
-					const exec = generateSignalPubKey(Buffer.from(KEY_BUNDLE_TYPE)).slice(0, 1)
+				if(retryCount > 1 || forceIncludeKeys) {
+					const { update, preKeys } = await getNextPreKeys(authState, 1)
+
+					const [keyId] = Object.keys(preKeys)
+					const key = preKeys[+keyId]
+
 					const content = receipt.content! as BinaryNode[]
 					content.push({
 						tag: 'keys',
 						attrs: { },
 						content: [
-							{ tag: 'type', attrs: { }, content: exec },
+							{ tag: 'type', attrs: { }, content: Buffer.from(KEY_BUNDLE_TYPE) },
 							{ tag: 'identity', attrs: { }, content: identityKey.public },
 							xmppPreKey(key, +keyId),
 							xmppSignedPreKey(signedPreKey),
 							{ tag: 'device-identity', attrs: { }, content: deviceIdentity }
 						]
 					})
+
+					ev.emit('creds.update', update)
 				}
 
 				await sendNode(receipt)
 
 				logger.info({ msgAttrs: node.attrs, retryCount }, 'sent retry receipt')
-
-				ev.emit('creds.update', update)
 			}
 		)
 	}
@@ -268,7 +270,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		msgRetryMap[key] = (msgRetryMap[key] || 0) + 1
 	}
 
-	const sendMessagesAgain = async(key: proto.IMessageKey, ids: string[]) => {
+	const sendMessagesAgain = async(
+		key: proto.IMessageKey,
+		ids: string[],
+		retryNode: BinaryNode
+	) => {
 		const msgs = await Promise.all(ids.map(id => getMessage({ ...key, id })))
 		const remoteJid = key.remoteJid!
 		const participant = key.participant || remoteJid
@@ -293,7 +299,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				if(sendToAll) {
 					msgRelayOpts.useUserDevicesCache = false
 				} else {
-					msgRelayOpts.participant = participant
+					msgRelayOpts.participant = {
+						jid: participant,
+						count: +retryNode.attrs.count
+					}
 				}
 
 				await relayMessage(key.remoteJid!, msg, msgRelayOpts)
@@ -363,11 +372,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					if(attrs.type === 'retry') {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
+						const retryNode = getBinaryNodeChild(node, 'retry')
 						if(willSendMessageAgain(ids[0], key.participant)) {
 							if(key.fromMe) {
 								try {
 									logger.debug({ attrs, key }, 'recv retry request')
-									await sendMessagesAgain(key, ids)
+									await sendMessagesAgain(key, ids, retryNode!)
 								} catch(error) {
 									logger.error({ key, ids, trace: error.stack }, 'error in sending message again')
 								}
@@ -426,7 +436,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						retryMutex.mutex(
 							async() => {
 								if(ws.readyState === ws.OPEN) {
-									await sendRetryRequest(node)
+									const encNode = getBinaryNodeChild(node, 'enc')
+									await sendRetryRequest(node, !encNode)
 									if(retryRequestDelayMs) {
 										await delay(retryRequestDelayMs)
 									}
@@ -463,12 +474,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 					}
 
 					cleanMessage(msg, authState.creds.me!.id)
+
+					await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 				}
 			),
 			sendMessageAck(node)
 		])
-
-		await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
 	}
 
 	const handleCall = async(node: BinaryNode) => {
