@@ -2,10 +2,10 @@
 import { proto } from '../../WAProto'
 import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from '../Defaults'
 import { MessageReceiptType, MessageRelayOptions, MessageUserReceipt, SocketConfig, WACallEvent, WAMessageKey, WAMessageStubType, WAPatchName } from '../Types'
-import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
+import { decodeMediaRetryNode, decodeMessageStanza, delay, encodeBigEndian, encodeSignedDeviceIdentity, getCallStatusFromNode, getNextPreKeys, getStatusFromReceiptType, isHistoryMsg, unixTimestampSeconds, xmppPreKey, xmppSignedPreKey } from '../Utils'
 import { makeMutex } from '../Utils/make-mutex'
 import { cleanMessage } from '../Utils/process-message'
-import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
+import { areJidsSameUser, BinaryNode, getAllBinaryNodeChildren, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidNormalizedUser, S_WHATSAPP_NET } from '../WABinary'
 import { extractGroupMetadata } from './groups'
 import { makeMessagesSocket } from './messages-send'
 
@@ -39,14 +39,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	let sendActiveReceipts = false
 
-	const sendMessageAck = async({ tag, attrs }: BinaryNode, extraAttrs: BinaryNodeAttributes = { }) => {
+	const sendMessageAck = async({ tag, attrs }: BinaryNode) => {
 		const stanza: BinaryNode = {
 			tag: 'ack',
 			attrs: {
 				id: attrs.id,
 				to: attrs.from,
 				class: tag,
-				...extraAttrs,
 			}
 		}
 
@@ -54,7 +53,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			stanza.attrs.participant = attrs.participant
 		}
 
-		if(tag !== 'message' && attrs.type && !extraAttrs.type) {
+		if(!!attrs.recipient) {
+			stanza.attrs.recipient = attrs.recipient
+		}
+
+		if(tag !== 'message' && attrs.type) {
 			stanza.attrs.type = attrs.type
 		}
 
@@ -77,10 +80,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		const { account, signedPreKey, signedIdentityKey: identityKey } = authState.creds
 
-		const deviceIdentity = proto.ADVSignedDeviceIdentity.encode({
-			...account,
-			accountSignatureKey: undefined
-		}).finish()
+		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
 		await authState.keys.transaction(
 			async() => {
 				const receipt: BinaryNode = {
@@ -193,7 +193,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			case 'not_ephemeral':
 				result.message = {
 					protocolMessage: {
-						type: proto.ProtocolMessage.ProtocolMessageType.EPHEMERAL_SETTING,
+						type: proto.Message.ProtocolMessage.Type.EPHEMERAL_SETTING,
 						ephemeralExpiration: +(child.attrs.expiration || 0)
 					}
 				}
@@ -340,13 +340,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						(
 							// basically, we only want to know when a message from us has been delivered to/read by the other person
 							// or another device of ours has read some messages
-							status > proto.WebMessageInfo.WebMessageInfoStatus.DELIVERY_ACK ||
+							status > proto.WebMessageInfo.Status.DELIVERY_ACK ||
 							!isNodeFromMe
 						)
 					) {
 						if(isJidGroup(remoteJid)) {
 							if(attrs.participant) {
-								const updateKey: keyof MessageUserReceipt = status === proto.WebMessageInfo.WebMessageInfoStatus.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
+								const updateKey: keyof MessageUserReceipt = status === proto.WebMessageInfo.Status.DELIVERY_ACK ? 'receiptTimestamp' : 'readTimestamp'
 								ev.emit(
 									'message-receipt.update',
 									ids.map(id => ({
@@ -428,7 +428,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				async() => {
 					await decryptionTask
 					// message failed to decrypt
-					if(msg.messageStubType === proto.WebMessageInfo.WebMessageInfoStubType.CIPHERTEXT) {
+					if(msg.messageStubType === proto.WebMessageInfo.StubType.CIPHERTEXT) {
 						logger.error(
 							{ key: msg.key, params: msg.messageStubParameters },
 							'failure in decrypting message'
@@ -516,7 +516,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 		ev.emit('call', [call])
 
-		await sendMessageAck(node, { type: infoChild.tag })
+		await sendMessageAck(node)
 	}
 
 	const handleBadAck = async({ attrs }: BinaryNode) => {

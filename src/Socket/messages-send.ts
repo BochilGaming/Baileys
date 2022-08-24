@@ -4,7 +4,7 @@ import NodeCache from 'node-cache'
 import { proto } from '../../WAProto'
 import { WA_DEFAULT_EPHEMERAL } from '../Defaults'
 import { AnyMessageContent, MediaConnInfo, MessageReceiptType, MessageRelayOptions, MiscMessageGenerationOptions, SocketConfig, WAMessageKey } from '../Types'
-import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getStatusCodeForMediaRetry, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, unixTimestampSeconds } from '../Utils'
+import { aggregateMessageKeysNotFromMe, assertMediaContent, bindWaitForEvent, decryptMediaRetryData, encodeSignedDeviceIdentity, encodeWAMessage, encryptMediaRetryRequest, encryptSenderKeyMsgSignalProto, encryptSignalProto, extractDeviceJids, generateMessageID, generateWAMessage, getStatusCodeForMediaRetry, getUrlFromDirectPath, getWAUploadToServer, jidToSignalProtocolAddress, parseAndInjectE2ESessions, patchMessageForMdIfRequired, unixTimestampSeconds } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
 import { areJidsSameUser, BinaryNode, BinaryNodeAttributes, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, isJidUser, jidDecode, jidEncode, jidNormalizedUser, JidWithDevice, S_WHATSAPP_NET } from '../WABinary'
 import { makeGroupsSocket } from './groups'
@@ -108,19 +108,20 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		await sendNode(node)
 	}
 
-	const sendReadReceipt = async(jid: string, participant: string | undefined, messageIds: string[]) => {
-		const privacySettings = await fetchPrivacySettings()
-		// based on privacy settings, we have to change the read type
-		const readType = privacySettings.readreceipts === 'all' ? 'read' : 'read-self'
-		return sendReceipt(jid, participant, messageIds, readType)
+	/** Correctly bulk send receipts to multiple chats, participants */
+	const sendReceipts = async(keys: WAMessageKey[], type: MessageReceiptType) => {
+		const recps = aggregateMessageKeysNotFromMe(keys)
+		for(const { jid, participant, messageIds } of recps) {
+			await sendReceipt(jid, participant, messageIds, type)
+		}
 	}
 
 	/** Bulk read messages. Keys can be from different chats & participants */
 	const readMessages = async(keys: WAMessageKey[]) => {
-		const recps = aggregateMessageKeysNotFromMe(keys)
-		for(const { jid, participant, messageIds } of recps) {
-			await sendReadReceipt(jid, participant, messageIds)
-		}
+		const privacySettings = await fetchPrivacySettings()
+		// based on privacy settings, we have to change the read type
+		const readType = privacySettings.readreceipts === 'all' ? 'read' : 'read-self'
+		await sendReceipts(keys, readType)
  	}
 
 	/** Fetch all the devices we've to send a message to */
@@ -299,7 +300,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const binaryNodeContent: BinaryNode[] = []
 
 		const devices: JidWithDevice[] = []
-		const extraParticipantNodeAttrs: BinaryNode['attrs'] = { }
 		if(participant) {
 			// when the retry request is not for a group
 			// only send to the specific device that asked for a retry
@@ -307,8 +307,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if(!isGroup) {
 				additionalAttributes = { ...additionalAttributes, device_fanout: 'false' }
 			}
-
-			extraParticipantNodeAttrs.count = participant.count.toString()
 
 			const { user, device } = jidDecode(participant.jid)!
 			devices.push({ user, device })
@@ -373,7 +371,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 						await assertSessions(senderKeyJids, false)
 
-						const result = await createParticipantNodes(senderKeyJids, encSenderKeyMsg, extraParticipantNodeAttrs)
+						const result = await createParticipantNodes(senderKeyJids, encSenderKeyMsg)
 						shouldIncludeDeviceIdentity = shouldIncludeDeviceIdentity || result.shouldIncludeDeviceIdentity
 
 						participants.push(...result.nodes)
@@ -425,8 +423,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 						{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 					] = await Promise.all([
-						createParticipantNodes(meJids, encodedMeMsg, extraParticipantNodeAttrs),
-						createParticipantNodes(otherJids, encodedMsg, extraParticipantNodeAttrs)
+						createParticipantNodes(meJids, encodedMeMsg),
+						createParticipantNodes(otherJids, encodedMsg)
 					])
 					participants.push(...meNodes)
 					participants.push(...otherNodes)
@@ -472,7 +470,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					(stanza.content as BinaryNode[]).push({
 						tag: 'device-identity',
 						attrs: { },
-						content: proto.ADVSignedDeviceIdentity.encode(authState.creds.account!).finish()
+						content: encodeSignedDeviceIdentity(authState.creds.account!, true)
 					})
 
 					logger.debug({ jid }, 'adding device identity')
@@ -527,7 +525,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		assertSessions,
 		relayMessage,
 		sendReceipt,
-		sendReadReceipt,
+		sendReceipts,
 		readMessages,
 		refreshMediaConn,
 	    waUploadToServer,
@@ -550,8 +548,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							} else {
 								try {
 									const media = decryptMediaRetryData(result.media!, mediaKey, result.key.id!)
-									if(media.result !== proto.MediaRetryNotification.MediaRetryNotificationResultType.SUCCESS) {
-										const resultStr = proto.MediaRetryNotification.MediaRetryNotificationResultType[media.result]
+									if(media.result !== proto.MediaRetryNotification.ResultType.SUCCESS) {
+										const resultStr = proto.MediaRetryNotification.ResultType[media.result]
 										throw new Boom(
 											`Media re-upload failed by device (${resultStr})`,
 											{ data: media, statusCode: getStatusCodeForMediaRetry(media.result) || 404 }
@@ -620,9 +618,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const additionalAttributes: BinaryNodeAttributes = { }
 				// required for delete
 				if(isDeleteMsg) {
-					additionalAttributes.edit = '7'
+					// if the chat is a group, and I am not the author, then delete the message as an admin
+					if(isJidGroup(content.delete?.remoteJid as string) && !content.delete?.fromMe) {
+						additionalAttributes.edit = '8'
+					} else {
+						additionalAttributes.edit = '7'
+					}
 				}
 
+				fullMsg.message = patchMessageForMdIfRequired(fullMsg.message!)
 				await relayMessage(jid, fullMsg.message!, { messageId: fullMsg.key.id!, cachedGroupMetadata: options.cachedGroupMetadata, additionalAttributes })
 				if(config.emitOwnEvents) {
 					process.nextTick(() => {

@@ -12,7 +12,7 @@ const MAX_SYNC_ATTEMPTS = 5
 const APP_STATE_SYNC_TIMEOUT_MS = 10_000
 
 export const makeChatsSocket = (config: SocketConfig) => {
-	const { logger, markOnlineOnConnect, downloadHistory } = config
+	const { logger, markOnlineOnConnect, downloadHistory, fireInitQueries } = config
 	const sock = makeSocket(config)
 	const {
 		ev,
@@ -41,6 +41,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 					'doing initial app state sync'
 				)
 				await resyncMainAppState(recvChats)
+
+				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
+				ev.emit('creds.update', { accountSyncCounter })
 			} else {
 				logger.warn('connection closed before app state sync')
 			}
@@ -207,8 +210,10 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				type: 'get'
 			}
 		})
-		const child = result.content?.[0] as BinaryNode
-		return (child.content as BinaryNode[])?.map(i => i.attrs.jid)
+
+		const listNode = getBinaryNodeChild(result, 'list')
+		return getBinaryNodeChildren(listNode, 'item')
+			.map(n => n.attrs.jid)
 	}
 
 	const updateBlockStatus = async(jid: string, action: 'block' | 'unblock') => {
@@ -311,8 +316,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 	}
 
-	const resyncAppState = async(collections: readonly WAPatchName[], recvChats: InitialReceivedChatsState | undefined) => {
-		const startedBuffer = ev.buffer()
+	const resyncAppState = ev.createBufferedFunction(async(collections: readonly WAPatchName[], recvChats: InitialReceivedChatsState | undefined) => {
 		const { onMutation } = newAppStateChunkHandler(recvChats)
 		// we use this to determine which events to fire
 		// otherwise when we resync from scratch -- all notifications will fire
@@ -424,12 +428,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}
 			}
 		)
-
-		// flush everything if we started the buffer here
-		if(startedBuffer) {
-			await ev.flush()
-		}
-	}
+	})
 
 	/**
      * fetch the profile picture of a user/group
@@ -689,18 +688,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 	 * queries need to be fired on connection open
 	 * help ensure parity with WA Web
 	 * */
-	const fireInitQueries = async() => {
+	const executeInitQueries = async() => {
 		await Promise.all([
 			fetchAbt(),
 			fetchProps(),
 			fetchBlocklist(),
 			fetchPrivacySettings(),
-			sendPresenceUpdate(markOnlineOnConnect ? 'available' : 'unavailable')
 		])
 	}
 
-	const upsertMessage = async(msg: WAMessage, type: MessageUpsertType) => {
-		const startedBuffer = ev.buffer()
+	const upsertMessage = ev.createBufferedFunction(async(msg: WAMessage, type: MessageUpsertType) => {
 		ev.emit('messages.upsert', { messages: [msg], type })
 
 		if(!!msg.pushName) {
@@ -738,11 +735,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			logger.debug('restarting app sync timeout')
 			appStateSyncTimeout.start()
 		}
-
-		if(startedBuffer) {
-			await ev.flush()
-		}
-	}
+	})
 
 	ws.on('CB:presence', handlePresenceUpdate)
 	ws.on('CB:chatstate', handlePresenceUpdate)
@@ -771,9 +764,16 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 	ev.on('connection.update', ({ connection }) => {
 		if(connection === 'open') {
-			fireInitQueries()
+			if(fireInitQueries) {
+				executeInitQueries()
+					.catch(
+						error => onUnexpectedError(error, 'init queries')
+					)
+			}
+
+			sendPresenceUpdate(markOnlineOnConnect ? 'available' : 'unavailable')
 				.catch(
-					error => onUnexpectedError(error, 'connection open requests')
+					error => onUnexpectedError(error, 'presence update requests')
 				)
 		}
 	})

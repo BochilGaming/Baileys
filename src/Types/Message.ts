@@ -9,22 +9,24 @@ import type { GroupMetadata } from './GroupMetadata'
 export { proto as WAProto }
 export type WAMessage = proto.IWebMessageInfo
 export type WAMessageContent = proto.IMessage
-export type WAContactMessage = proto.IContactMessage
-export type WAContactsArrayMessage = proto.IContactsArrayMessage
+export type WAContactMessage = proto.Message.IContactMessage
+export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage
 export type WAMessageKey = proto.IMessageKey
-export type WATextMessage = proto.IExtendedTextMessage
+export type WATextMessage = proto.Message.IExtendedTextMessage
 export type WAContextInfo = proto.IContextInfo
-export type WALocationMessage = proto.ILocationMessage
-export type WAGenericMediaMessage = proto.IVideoMessage | proto.IImageMessage | proto.IAudioMessage | proto.IDocumentMessage | proto.IStickerMessage
-export import WAMessageStubType = proto.WebMessageInfo.WebMessageInfoStubType
-export import WAMessageStatus = proto.WebMessageInfo.WebMessageInfoStatus
+export type WALocationMessage = proto.Message.ILocationMessage
+export type WAGenericMediaMessage = proto.Message.IVideoMessage | proto.Message.IImageMessage | proto.Message.IAudioMessage | proto.Message.IDocumentMessage | proto.Message.IStickerMessage
+// eslint-disable-next-line no-unused-vars
+export import WAMessageStubType = proto.WebMessageInfo.StubType
+// eslint-disable-next-line no-unused-vars
+export import WAMessageStatus = proto.WebMessageInfo.Status
 export type WAMediaUpload = Buffer | { url: URL | string } | { stream: Readable }
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
 
 export type DownloadableMessage = { mediaKey?: Uint8Array | null, directPath?: string | null, url?: string | null }
 
-export type MessageReceiptType = 'read' | 'read-self' | 'hist_sync' | 'peer_msg' | 'sender' | 'inactive' | undefined
+export type MessageReceiptType = 'read' | 'read-self' | 'hist_sync' | 'peer_msg' | 'sender' | 'inactive' | 'played' | undefined
 
 export type MediaConnInfo = {
     auth: string
@@ -51,7 +53,7 @@ type ViewOnce = {
 }
 type Buttonable = {
     /** add buttons to the message  */
-    buttons?: proto.IButton[]
+    buttons?: proto.Message.ButtonsMessage.IButton[]
 }
 type Templatable = {
     /** add buttons to the message (conflicts with normal buttons)*/
@@ -61,7 +63,7 @@ type Templatable = {
 }
 type Listable = {
     /** Sections of the List */
-    sections?: proto.ISection[]
+    sections?: proto.Message.ListMessage.ISection[]
 
     /** Title of a List Message only */
     title?: string
@@ -79,27 +81,29 @@ export type AnyMediaMessageContent = (
         image: WAMediaUpload
         caption?: string
         jpegThumbnail?: string
-    } & Mentionable & Buttonable & Templatable & WithDimensions) |
-    ({
+    } & Mentionable & Buttonable & Templatable & WithDimensions)
+    | ({
         video: WAMediaUpload
         caption?: string
         gifPlayback?: boolean
         jpegThumbnail?: string
-    } & Mentionable & Buttonable & Templatable & WithDimensions) | {
+    } & Mentionable & Buttonable & Templatable & WithDimensions)
+    | {
         audio: WAMediaUpload
         /** if set to true, will send as a `voice note` */
         ptt?: boolean
         /** optionally tell the duration of the audio */
         seconds?: number
-    } | ({
+    }
+    | ({
         sticker: WAMediaUpload
         isAnimated?: boolean
     } & WithDimensions) | ({
         document: WAMediaUpload
         mimetype: string
         fileName?: string
-    } & Buttonable & Templatable)) &
-    { mimetype?: string }
+    } & Buttonable & Templatable))
+    & { mimetype?: string }
 
 export type ButtonReplyInfo = {
     displayText: string
@@ -107,26 +111,36 @@ export type ButtonReplyInfo = {
     index: number
 }
 
+export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapshot, 'productImage'> & {
+    productImage: WAMediaUpload
+}
+
 export type AnyRegularMessageContent = (
     ({
 	    text: string
         linkPreview?: WAUrlInfo | null
     }
-    & Mentionable & Buttonable & Templatable & Listable) |
-    AnyMediaMessageContent |
-    {
+    & Mentionable & Buttonable & Templatable & Listable)
+    | AnyMediaMessageContent
+    | {
         contacts: {
             displayName?: string
-            contacts: proto.IContactMessage[]
+            contacts: proto.Message.IContactMessage[]
         }
-    } |
-    {
+    }
+    | {
         location: WALocationMessage
-    } | {
-        react: proto.IReactionMessage
-    } | {
+    }
+    | { react: proto.Message.IReactionMessage }
+    | {
         buttonReply: ButtonReplyInfo
         type: 'template' | 'plain'
+    }
+    | {
+        product: WASendableProduct,
+        businessOwnerJid?: string
+        body?: string
+        footer?: string
     }
 ) & ViewOnce
 
@@ -134,6 +148,7 @@ export type AnyMessageContent = AnyRegularMessageContent | {
 	forward: WAMessage
 	force?: boolean
 } | {
+    /** Delete your message or anyone's message in a group (admin required) */
 	delete: WAMessageKey
 } | {
 	disappearingMessagesInChat: boolean | number

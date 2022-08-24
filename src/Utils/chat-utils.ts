@@ -8,7 +8,7 @@ import { toNumber } from './generics'
 import { LT_HASH_ANTI_TAMPERING } from './lt-hash'
 import { downloadContentFromMessage, } from './messages-media'
 
-type FetchAppStateSyncKey = (keyId: string) => Promise<proto.IAppStateSyncKeyData> | proto.IAppStateSyncKeyData
+type FetchAppStateSyncKey = (keyId: string) => Promise<proto.Message.IAppStateSyncKeyData> | proto.Message.IAppStateSyncKeyData
 
 const mutationKeys = (keydata: Uint8Array) => {
 	const expanded = hkdf(keydata, 160, { info: 'WhatsApp Mutation Keys' })
@@ -21,14 +21,14 @@ const mutationKeys = (keydata: Uint8Array) => {
 	}
 }
 
-const generateMac = (operation: proto.SyncdMutation.SyncdMutationSyncdOperation, data: Buffer, keyId: Uint8Array | string, key: Buffer) => {
+const generateMac = (operation: proto.SyncdMutation.SyncdOperation, data: Buffer, keyId: Uint8Array | string, key: Buffer) => {
 	const getKeyData = () => {
 		let r: number
 		switch (operation) {
-		case proto.SyncdMutation.SyncdMutationSyncdOperation.SET:
+		case proto.SyncdMutation.SyncdOperation.SET:
 			r = 0x01
 			break
-		case proto.SyncdMutation.SyncdMutationSyncdOperation.REMOVE:
+		case proto.SyncdMutation.SyncdOperation.REMOVE:
 			r = 0x02
 			break
 		}
@@ -54,7 +54,7 @@ const to64BitNetworkOrder = (e: number) => {
 	return Buffer.from(t)
 }
 
-type Mac = { indexMac: Uint8Array, valueMac: Uint8Array, operation: proto.SyncdMutation.SyncdMutationSyncdOperation }
+type Mac = { indexMac: Uint8Array, valueMac: Uint8Array, operation: proto.SyncdMutation.SyncdOperation }
 
 const makeLtHashGenerator = ({ indexValueMap, hash }: Pick<LTHashState, 'hash' | 'indexValueMap'>) => {
 	indexValueMap = { ...indexValueMap }
@@ -65,7 +65,7 @@ const makeLtHashGenerator = ({ indexValueMap, hash }: Pick<LTHashState, 'hash' |
 		mix: ({ indexMac, valueMac, operation }: Mac) => {
 			const indexMacBase64 = Buffer.from(indexMac).toString('base64')
 			const prevOp = indexValueMap[indexMacBase64]
-			if(operation === proto.SyncdMutation.SyncdMutationSyncdOperation.REMOVE) {
+			if(operation === proto.SyncdMutation.SyncdOperation.REMOVE) {
 				if(!prevOp) {
 					throw new Boom('tried remove, but no previous op', { data: { indexMac, valueMac } })
 				}
@@ -212,7 +212,7 @@ export const decodeSyncdMutations = async(
 	for(const msgMutation of msgMutations!) {
 		// if it's a syncdmutation, get the operation property
 		// otherwise, if it's only a record -- it'll be a SET mutation
-		const operation = 'operation' in msgMutation ? msgMutation.operation : proto.SyncdMutation.SyncdMutationSyncdOperation.SET
+		const operation = 'operation' in msgMutation ? msgMutation.operation : proto.SyncdMutation.SyncdOperation.SET
 		const record = ('record' in msgMutation && !!msgMutation.record) ? msgMutation.record : msgMutation as proto.ISyncdRecord
 
 		const key = await getKey(record.keyId!.id!)
@@ -330,12 +330,12 @@ export const extractSyncdPatches = async(result: BinaryNode) => {
 
 export const downloadExternalBlob = async(blob: proto.IExternalBlobReference) => {
 	const stream = await downloadContentFromMessage(blob, 'md-app-state')
-	let buffer = Buffer.from([])
+	const bufferArray: Buffer[] = []
 	for await (const chunk of stream) {
-		buffer = Buffer.concat([buffer, chunk])
+		bufferArray.push(chunk)
 	}
 
-	return buffer
+	return Buffer.concat(bufferArray)
 }
 
 export const downloadExternalPatch = async(blob: proto.IExternalBlobReference) => {
@@ -460,9 +460,9 @@ export const chatModificationToAppPatch = (
 	mod: ChatModification,
 	jid: string
 ) => {
-	const OP = proto.SyncdMutation.SyncdMutationSyncdOperation
+	const OP = proto.SyncdMutation.SyncdOperation
 	const getMessageRange = (lastMessages: LastMessageList) => {
-		let messageRange: proto.ISyncActionMessageRange
+		let messageRange: proto.SyncActionValue.ISyncActionMessageRange
 		if(Array.isArray(lastMessages)) {
 			const lastMsg = lastMessages[lastMessages.length - 1]
 			messageRange = {
@@ -610,7 +610,10 @@ export const processSyncAction = (
 	const recvChats = initialSyncOpts?.recvChats
 	const accountSettings = initialSyncOpts?.accountSettings
 
-	const { syncAction: { value: action }, index: [type, id, msgId, fromMe] } = syncAction
+	const {
+		syncAction: { value: action },
+		index: [type, id, msgId, fromMe]
+	} = syncAction
 	if(action?.muteAction) {
 		ev.emit(
 			'chats.update',
@@ -663,7 +666,7 @@ export const processSyncAction = (
 				ev.emit('chats.update', [{ id, unreadCount: !!markReadAction?.read ? 0 : -1 }])
 			}
 		}
-	} else if(action?.clearChatAction) {
+	} else if(action?.deleteMessageForMeAction || type === 'deleteMessageForMe') {
 		ev.emit('messages.delete', { keys: [
 			{
 				remoteJid: id,
@@ -713,7 +716,7 @@ export const processSyncAction = (
 		logger?.warn({ syncAction, id }, 'unprocessable update')
 	}
 
-	function isValidPatchBasedOnMessageRange(id: string, msgRange: proto.ISyncActionMessageRange | null | undefined) {
+	function isValidPatchBasedOnMessageRange(id: string, msgRange: proto.SyncActionValue.ISyncActionMessageRange | null | undefined) {
 		const chat = recvChats?.[id]
 		const lastMsgTimestamp = msgRange?.lastMessageTimestamp || msgRange?.lastSystemMessageTimestamp || 0
 		const chatLastMsgTimestamp = chat?.lastMsgRecvTimestamp || 0
